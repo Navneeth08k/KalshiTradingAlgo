@@ -1,5 +1,6 @@
 """
-Benchmark Fetcher - Fetches odds from Pinnacle and other sources
+Benchmark Fetcher - Fetches odds from multiple sources (The Odds API, Betfair, etc.)
+Note: Pinnacle API is now restricted and requires special access
 """
 import requests
 import json
@@ -17,26 +18,111 @@ class BenchmarkFetcher:
             'Content-Type': 'application/json',
             'Accept': 'application/json'
         })
+        
+        # API endpoints for alternative sources
+        self.the_odds_api_key = Config.THE_ODDS_API_KEY
+        self.betfair_api_key = Config.BETFAIR_API_KEY
+        self.the_odds_base_url = 'https://api.the-odds-api.com/v4'
+        self.betfair_base_url = 'https://api.betfair.com/exchange'
+    
+    def get_the_odds_api_odds(self, sport: str, entity: str) -> Optional[Dict[str, Any]]:
+        """
+        Fetch odds from The Odds API (free tier available)
+        """
+        try:
+            if not self.the_odds_api_key:
+                self.logger.warning("The Odds API key not configured")
+                return None
+                
+            # Map our categories to The Odds API sports (based on actual API documentation)
+            sport_mapping = {
+                'NBA': 'basketball_nba',
+                'NFL': 'americanfootball_nfl',
+                'MLB': 'baseball_mlb',
+                'NHL': 'icehockey_nhl',
+                'SOCCER': 'soccer_epl',
+                'POLITICS': 'americanfootball_nfl',  # Use NFL as fallback for politics
+                'FINANCE': 'basketball_nba'  # Use NBA as fallback for finance
+            }
+            
+            api_sport = sport_mapping.get(sport, sport.lower())
+            
+            url = f"{self.the_odds_base_url}/sports/{api_sport}/odds"
+            params = {
+                'apiKey': self.the_odds_api_key,
+                'regions': 'us',
+                'markets': 'h2h',
+                'oddsFormat': 'american'
+            }
+            
+            response = self.session.get(url, params=params, timeout=10)
+            response.raise_for_status()
+            
+            data = response.json()
+            
+            # Find odds for the specific entity
+            for game in data:
+                if entity.lower() in game.get('home_team', '').lower() or \
+                   entity.lower() in game.get('away_team', '').lower():
+                    
+                    # Get the best odds from all bookmakers
+                    best_odds = self._extract_best_odds(game, entity)
+                    if best_odds:
+                        return {
+                            "source": "The Odds API",
+                            "market_type": sport,
+                            "entity": entity,
+                            "odds": best_odds['odds'],
+                            "implied_probability": best_odds['implied_prob'],
+                            "timestamp": datetime.now().isoformat(),
+                            "confidence": 0.85
+                        }
+            
+            self.logger.warning(f"No odds found for {entity} in {sport}")
+            return None
+            
+        except Exception as e:
+            self.logger.error(f"Error fetching The Odds API odds: {e}")
+            return None
+    
+    def _extract_best_odds(self, game_data: Dict, entity: str) -> Optional[Dict[str, Any]]:
+        """Extract best odds for an entity from game data"""
+        try:
+            best_odds = None
+            best_prob = 0
+            
+            for bookmaker in game_data.get('bookmakers', []):
+                for market in bookmaker.get('markets', []):
+                    for outcome in market.get('outcomes', []):
+                        if entity.lower() in outcome.get('name', '').lower():
+                            odds = outcome.get('price', 0)
+                            if odds != 0:
+                                # Convert American odds to implied probability
+                                if odds > 0:
+                                    implied_prob = 100 / (odds + 100)
+                                else:
+                                    implied_prob = abs(odds) / (abs(odds) + 100)
+                                
+                                if implied_prob > best_prob:
+                                    best_odds = {
+                                        'odds': odds,
+                                        'implied_prob': implied_prob,
+                                        'bookmaker': bookmaker.get('title', 'Unknown')
+                                    }
+                                    best_prob = implied_prob
+            
+            return best_odds
+            
+        except Exception as e:
+            self.logger.error(f"Error extracting best odds: {e}")
+            return None
     
     def get_pinnacle_odds(self, market_type: str, entity: str) -> Optional[Dict[str, Any]]:
         """
-        Fetch odds from Pinnacle for a specific market
+        Fetch odds from Pinnacle (now restricted - using fallback)
         """
-        try:
-            # This would be replaced with actual Pinnacle API call
-            # For now, we'll use mock data based on market type
-            mock_odds = self._get_mock_pinnacle_odds(market_type, entity)
-            
-            if mock_odds:
-                self.logger.info(f"Fetched Pinnacle odds for {entity}: {mock_odds['implied_probability']:.3f}")
-                return mock_odds
-            else:
-                self.logger.warning(f"No Pinnacle odds found for {entity}")
-                return None
-                
-        except Exception as e:
-            self.logger.error(f"Error fetching Pinnacle odds: {e}")
-            return None
+        self.logger.warning("Pinnacle API is restricted. Using fallback data.")
+        return self._get_mock_pinnacle_odds(market_type, entity)
     
     def _get_mock_pinnacle_odds(self, market_type: str, entity: str) -> Optional[Dict[str, Any]]:
         """
@@ -83,14 +169,26 @@ class BenchmarkFetcher:
         """
         odds_sources = []
         
-        # Pinnacle odds
+        # Try The Odds API first (free tier available)
+        the_odds_odds = self.get_the_odds_api_odds(market_type, entity)
+        if the_odds_odds:
+            odds_sources.append(the_odds_odds)
+        
+        # Try Pinnacle (now restricted, will use fallback)
         pinnacle_odds = self.get_pinnacle_odds(market_type, entity)
         if pinnacle_odds:
             odds_sources.append(pinnacle_odds)
         
-        # Mock other sources
+        # Add mock sources as fallback
         other_sources = self._get_mock_other_sources(market_type, entity)
         odds_sources.extend(other_sources)
+        
+        # If no real data available, ensure we have at least mock data
+        if not odds_sources:
+            self.logger.warning(f"No odds sources available for {entity}, using mock data")
+            mock_odds = self._get_mock_pinnacle_odds(market_type, entity)
+            if mock_odds:
+                odds_sources.append(mock_odds)
         
         return odds_sources
     

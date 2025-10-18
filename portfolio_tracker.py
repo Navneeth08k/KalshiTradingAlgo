@@ -13,6 +13,8 @@ class PortfolioTracker:
         """Initialize the portfolio tracker"""
         self.logger = logging.getLogger(__name__)
         self.db_path = Config.DATABASE_PATH
+        self.fake_money_mode = Config.FAKE_MONEY_MODE
+        self.initial_balance = Config.INITIAL_BALANCE
         self._init_database()
     
     def _init_database(self):

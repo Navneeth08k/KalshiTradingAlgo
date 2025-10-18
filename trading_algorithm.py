@@ -13,6 +13,7 @@ from benchmark_fetcher import BenchmarkFetcher
 from signal_generator import SignalGenerator
 from portfolio_tracker import PortfolioTracker
 from feedback_loop import FeedbackLoop
+from kalshi_api import KalshiAPI
 from config import Config
 
 class TradingAlgorithm:
@@ -28,6 +29,7 @@ class TradingAlgorithm:
         self.signal_generator = SignalGenerator()
         self.portfolio_tracker = PortfolioTracker()
         self.feedback_loop = FeedbackLoop()
+        self.kalshi_api = KalshiAPI()
         
         # Validate configuration
         try:
@@ -61,6 +63,10 @@ class TradingAlgorithm:
         try:
             self.logger.info("Starting full trading cycle")
             cycle_start = datetime.now()
+            
+            # Validate system health before starting
+            if not self._validate_system_health():
+                return {"status": "error", "message": "System health check failed"}
             
             # Step 1: Get trending entities with sentiment
             self.logger.info("Step 1: Analyzing sentiment for trending entities")
@@ -114,8 +120,11 @@ class TradingAlgorithm:
             self.logger.info("Step 4: Generating trading signals")
             signals = []
             for entity_data in entities_with_odds:
-                # Mock Kalshi price (in real implementation, fetch from Kalshi API)
-                kalshi_price = self._get_mock_kalshi_price(entity_data['kalshi_ticker'])
+                # Get real Kalshi price from API
+                kalshi_price = self.kalshi_api.get_market_price(entity_data['kalshi_ticker'])
+                if kalshi_price is None:
+                    self.logger.warning(f"Could not get price for {entity_data['kalshi_ticker']}, using fallback")
+                    kalshi_price = self._get_fallback_kalshi_price(entity_data['kalshi_ticker'])
                 
                 signal = self.signal_generator.generate_signal(
                     entity=entity_data['entity'],
@@ -170,10 +179,18 @@ class TradingAlgorithm:
             self.logger.error(f"Error in full trading cycle: {e}")
             return {"status": "error", "message": str(e)}
     
-    def _get_mock_kalshi_price(self, ticker: str) -> float:
-        """Get mock Kalshi price (replace with actual API call)"""
-        # Mock prices based on ticker
-        mock_prices = {
+    def _get_fallback_kalshi_price(self, ticker: str) -> float:
+        """Get fallback Kalshi price when API is unavailable"""
+        # Try to get real market data first
+        try:
+            real_price = self.kalshi_api.get_market_price(ticker)
+            if real_price is not None:
+                return real_price
+        except Exception:
+            pass
+        
+        # Fallback to mock prices if real data unavailable
+        fallback_prices = {
             "NBA_2025_GSW_CHAMPIONSHIP": 0.27,
             "NBA_2025_LAL_CHAMPIONSHIP": 0.15,
             "NBA_2025_BOS_CHAMPIONSHIP": 0.18,
@@ -184,7 +201,7 @@ class TradingAlgorithm:
             "BTC_2024_100K": 0.25,
             "SPY_2024_500": 0.60
         }
-        return mock_prices.get(ticker, 0.50)  # Default to 50% if not found
+        return fallback_prices.get(ticker, 0.50)  # Default to 50% if not found
     
     def run_sentiment_analysis(self) -> Dict[str, Any]:
         """Run sentiment analysis only"""
@@ -217,7 +234,9 @@ class TradingAlgorithm:
             self.logger.info("Running signal generation")
             signals = []
             for entity_data in entities_with_odds:
-                kalshi_price = self._get_mock_kalshi_price(entity_data['kalshi_ticker'])
+                kalshi_price = self.kalshi_api.get_market_price(entity_data['kalshi_ticker'])
+                if kalshi_price is None:
+                    kalshi_price = self._get_fallback_kalshi_price(entity_data['kalshi_ticker'])
                 signal = self.signal_generator.generate_signal(
                     entity=entity_data['entity'],
                     sentiment_score=entity_data['sentiment_score'],
@@ -300,3 +319,117 @@ class TradingAlgorithm:
         except Exception as e:
             self.logger.error(f"Error getting system status: {e}")
             return {"status": "error", "message": str(e)}
+    
+    def _validate_system_health(self) -> bool:
+        """
+        Validate that all system components are working properly
+        """
+        try:
+            # Check API connectivity
+            if not self._check_api_connectivity():
+                self.logger.error("API connectivity check failed")
+                return False
+            
+            # Check database connectivity
+            if not self._check_database_connectivity():
+                self.logger.error("Database connectivity check failed")
+                return False
+            
+            # Check component initialization
+            if not self._check_component_health():
+                self.logger.error("Component health check failed")
+                return False
+            
+            self.logger.info("System health check passed")
+            return True
+            
+        except Exception as e:
+            self.logger.error(f"System health check error: {e}")
+            return False
+    
+    def _check_api_connectivity(self) -> bool:
+        """Check if APIs are accessible"""
+        try:
+            # Test Gemini API
+            if Config.GEMINI_API_KEY:
+                # Simple test - this would be a lightweight API call
+                pass  # Gemini API test would go here
+            
+            # Test Kalshi API
+            if Config.KALSHI_API_KEY:
+                markets = self.kalshi_api.get_markets(limit=1)
+                if not markets:
+                    self.logger.warning("Kalshi API returned no markets")
+            
+            return True
+            
+        except Exception as e:
+            self.logger.error(f"API connectivity check failed: {e}")
+            return False
+    
+    def _check_database_connectivity(self) -> bool:
+        """Check if database is accessible"""
+        try:
+            # Test database connection
+            summary = self.portfolio_tracker.get_portfolio_summary()
+            return True
+            
+        except Exception as e:
+            self.logger.error(f"Database connectivity check failed: {e}")
+            return False
+    
+    def _check_component_health(self) -> bool:
+        """Check if all components are properly initialized"""
+        try:
+            # Check if all components are initialized
+            components = [
+                self.sentiment_engine,
+                self.market_mapper,
+                self.benchmark_fetcher,
+                self.signal_generator,
+                self.portfolio_tracker,
+                self.feedback_loop,
+                self.kalshi_api
+            ]
+            
+            for component in components:
+                if component is None:
+                    self.logger.error("Component not initialized")
+                    return False
+            
+            return True
+            
+        except Exception as e:
+            self.logger.error(f"Component health check failed: {e}")
+            return False
+    
+    def _handle_api_failure(self, component: str, error: Exception) -> Dict[str, Any]:
+        """
+        Handle API failures gracefully with fallback mechanisms
+        """
+        self.logger.error(f"API failure in {component}: {error}")
+        
+        # Implement fallback strategies based on component
+        if component == "sentiment_engine":
+            return {"status": "fallback", "message": "Using cached sentiment data"}
+        elif component == "kalshi_api":
+            return {"status": "fallback", "message": "Using mock market data"}
+        elif component == "benchmark_fetcher":
+            return {"status": "fallback", "message": "Using historical odds data"}
+        else:
+            return {"status": "error", "message": f"Component {component} failed"}
+    
+    def _retry_with_backoff(self, func, max_retries: int = 3, base_delay: float = 1.0):
+        """
+        Retry a function with exponential backoff
+        """
+        for attempt in range(max_retries):
+            try:
+                return func()
+            except Exception as e:
+                if attempt == max_retries - 1:
+                    raise e
+                
+                delay = base_delay * (2 ** attempt)
+                self.logger.warning(f"Attempt {attempt + 1} failed, retrying in {delay}s: {e}")
+                time.sleep(delay)

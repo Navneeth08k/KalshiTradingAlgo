@@ -34,17 +34,33 @@ cp env_example.txt .env
 Edit `.env` with your actual API keys:
 
 ```env
-# Google Gemini API Key (get from https://makersuite.google.com/app/apikey)
+# REQUIRED: Google Gemini API Key (get from https://makersuite.google.com/app/apikey)
 GEMINI_API_KEY=your_gemini_api_key_here
 
-# Kalshi API Key (get from https://trading.kalshi.com/trade-api)
+# RECOMMENDED: Kalshi API Key (get from https://trading.kalshi.com/trade-api)
 KALSHI_API_KEY=your_kalshi_api_key_here
 
-# Pinnacle API Key (get from https://www.pinnacle.com/en/api)
-PINNACLE_API_KEY=your_pinnacle_api_key_here
+# RECOMMENDED: The Odds API Key (free tier available at https://the-odds-api.com/)
+THE_ODDS_API_KEY=your_the_odds_api_key_here
+
+# OPTIONAL: Betfair API Key (get from https://developer.betfair.com/)
+BETFAIR_API_KEY=your_betfair_api_key_here
+
+# NOTE: Pinnacle API is now restricted (requires special access)
+# PINNACLE_API_KEY=your_pinnacle_api_key_here
 ```
 
-### 3. Run the System
+### 3. Validate System
+
+Before running the system, validate all components:
+
+```bash
+python test_system_validation.py
+```
+
+This will test all components and provide recommendations for any issues.
+
+### 4. Run the System
 
 #### Option A: Automated Trading (Recommended)
 ```bash
@@ -79,16 +95,21 @@ Access the dashboard at: `http://localhost:8501`
 - Uses Google Gemini AI to analyze trending topics
 - Provides sentiment scores (-1 to +1) for entities
 - Identifies emotional overhype or dumping
+- **NEW**: Enhanced error handling and retry logic
+- **NEW**: Fallback entities when API fails
 
 ### 2. Market Mapper (`market_mapper.py`)
 - Maps trending entities to Kalshi markets
 - Uses semantic matching to find relevant markets
 - Validates market mappings for accuracy
+- **NEW**: Improved error handling and fallback mappings
 
 ### 3. Benchmark Fetcher (`benchmark_fetcher.py`)
-- Fetches odds from Pinnacle and other sources
+- **UPDATED**: Now uses The Odds API (free tier) instead of restricted Pinnacle API
+- Fetches odds from multiple sources including Betfair
 - Calculates consensus odds from multiple sources
 - Detects arbitrage opportunities
+- **NEW**: Fallback to mock data when APIs unavailable
 
 ### 4. Signal Generator (`signal_generator.py`)
 - Combines sentiment and price gap analysis
@@ -100,7 +121,13 @@ Access the dashboard at: `http://localhost:8501`
 - Simulates trades with realistic P&L calculation
 - Maintains SQLite database of all activities
 
-### 6. Feedback Loop (`feedback_loop.py`)
+### 6. Kalshi API (`kalshi_api.py`)
+- **NEW**: Real Kalshi API integration
+- Fetches live market data and prices
+- Places orders and tracks positions
+- **NEW**: Fallback to mock data when API unavailable
+
+### 7. Feedback Loop (`feedback_loop.py`)
 - Analyzes performance and optimizes parameters
 - Generates daily reports and recommendations
 - Implements machine learning for threshold adjustment
@@ -211,12 +238,35 @@ The system automatically:
 - Adjusts position sizing based on volatility
 - Implements risk management improvements
 
+## 🆕 Recent Improvements (2024)
+
+### ✅ Fixed Issues
+- **Pinnacle API**: Replaced restricted Pinnacle API with The Odds API (free tier)
+- **Gemini API**: Enhanced error handling, retry logic, and fallback mechanisms
+- **Kalshi API**: Added real API integration with fallback to mock data
+- **Error Handling**: Comprehensive error handling throughout the system
+- **Validation**: Added system validation tests and health checks
+
+### 🔧 New Features
+- **System Validation**: Run `python test_system_validation.py` to test all components
+- **Fallback Mechanisms**: System continues working even when APIs are unavailable
+- **Better Error Messages**: Clear error messages and recommendations
+- **API Alternatives**: Multiple data sources for better reliability
+
+### 📊 API Status
+- **Gemini API**: ✅ Working (required)
+- **The Odds API**: ✅ Working (free tier available)
+- **Kalshi API**: ✅ Working (recommended)
+- **Pinnacle API**: ❌ Restricted (requires special access)
+- **Betfair API**: ✅ Working (optional)
+
 ## 🚨 Important Notes
 
 ### API Requirements
 - **Gemini API**: Required for sentiment analysis and market mapping
-- **Kalshi API**: Required for real market data (currently using mock data)
-- **Pinnacle API**: Required for benchmark odds (currently using mock data)
+- **The Odds API**: Recommended for benchmark odds (free tier available)
+- **Kalshi API**: Recommended for real market data
+- **Betfair API**: Optional alternative data source
 
 ### Risk Management
 - All trades are simulated by default

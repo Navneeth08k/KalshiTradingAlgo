@@ -11,11 +11,19 @@ from config import Config
 class MarketMapper:
     def __init__(self):
         """Initialize the market mapper"""
-        genai.configure(api_key=Config.GEMINI_API_KEY)
-        self.model = genai.GenerativeModel('gemini-pro')
-        self.logger = logging.getLogger(__name__)
-        self.kalshi_markets = {}
-        self._load_kalshi_markets()
+        if not Config.GEMINI_API_KEY:
+            raise ValueError("GEMINI_API_KEY is required but not set")
+        
+        try:
+            genai.configure(api_key=Config.GEMINI_API_KEY)
+            self.model = genai.GenerativeModel('gemini-2.5-flash')
+            self.logger = logging.getLogger(__name__)
+            self.kalshi_markets = {}
+            self._load_kalshi_markets()
+            self.logger.info("Market mapper initialized successfully")
+        except Exception as e:
+            self.logger.error(f"Failed to initialize market mapper: {e}")
+            raise
     
     def _load_kalshi_markets(self):
         """Load available Kalshi markets from API"""
@@ -51,62 +59,99 @@ class MarketMapper:
         Map an entity to relevant Kalshi markets using Gemini
         """
         prompt = f"""
-        You are a market mapping expert. Given the entity "{entity}" in category "{category}",
-        find the most relevant Kalshi prediction markets.
+        Map entity "{entity}" in {category} to Kalshi market.
         
-        Available market categories and examples:
-        - NBA: Championship winners, playoff teams, player awards
-        - NFL: Super Bowl winners, playoff teams, division winners
-        - Politics: Election outcomes, policy changes, approval ratings
-        - Finance: Stock prices, crypto prices, economic indicators
-        - Entertainment: Awards, box office, ratings
+        Return JSON:
+        [{{"entity": "{entity}", "category": "{category}", "kalshi_ticker": "NBA_2025_GSW_CHAMPIONSHIP", "market_name": "Golden State Warriors to win 2025 NBA Championship", "relevance_score": 0.95, "market_type": "championship"}}]
         
-        For "{entity}", identify:
-        1. The most relevant Kalshi market ticker
-        2. Market name/description
-        3. Relevance score (0-1)
-        4. Market type (championship, playoff, price target, etc.)
-        
-        Return as JSON array:
-        [
-            {{
-                "entity": "{entity}",
-                "category": "{category}",
-                "kalshi_ticker": "NBA_2025_GSW_CHAMPIONSHIP",
-                "market_name": "Golden State Warriors to win 2025 NBA Championship",
-                "relevance_score": 0.95,
-                "market_type": "championship"
-            }}
-        ]
-        
-        Only return markets that are highly relevant (relevance_score > 0.7).
-        If no relevant markets exist, return empty array.
+        Use clean JSON only. No markdown, no extra text.
         """
         
         try:
-            response = self.model.generate_content(prompt)
-            mapping_text = response.text.strip()
-            
-            # Clean up JSON response
-            if mapping_text.startswith('```json'):
-                mapping_text = mapping_text[7:]
-            if mapping_text.endswith('```'):
-                mapping_text = mapping_text[:-3]
-            
-            mappings = json.loads(mapping_text)
-            
-            # Validate and filter mappings
-            valid_mappings = []
-            for mapping in mappings:
-                if mapping.get('relevance_score', 0) > 0.7:
-                    valid_mappings.append(mapping)
-            
-            self.logger.info(f"Mapped {entity} to {len(valid_mappings)} relevant markets")
-            return valid_mappings
+            # Add retry logic for API calls
+            max_retries = 3
+            for attempt in range(max_retries):
+                try:
+                    response = self.model.generate_content(
+                        prompt,
+                        generation_config=genai.types.GenerationConfig(
+                            temperature=0.3,  # Lower temperature for more consistent mapping
+                            max_output_tokens=1024,
+                        )
+                    )
+                    
+                    # Handle complex responses properly
+                    mapping_text = ""
+                    if hasattr(response, 'text') and response.text:
+                        mapping_text = response.text.strip()
+                    elif hasattr(response, 'parts') and response.parts:
+                        mapping_text = response.parts[0].text.strip()
+                    elif hasattr(response, 'candidates') and response.candidates:
+                        if hasattr(response.candidates[0], 'content') and hasattr(response.candidates[0].content, 'parts'):
+                            mapping_text = response.candidates[0].content.parts[0].text.strip()
+                    else:
+                        raise ValueError("Empty or invalid response from Gemini API")
+                    
+                    # Clean up JSON response
+                    if mapping_text.startswith('```json'):
+                        mapping_text = mapping_text[7:]
+                    if mapping_text.endswith('```'):
+                        mapping_text = mapping_text[:-3]
+                    
+                    # Try to parse JSON with better error handling
+                    try:
+                        mappings = json.loads(mapping_text)
+                    except json.JSONDecodeError as e:
+                        self.logger.warning(f"JSON decode error on attempt {attempt + 1}: {e}")
+                        # Try to extract JSON from malformed response
+                        import re
+                        # Look for JSON array pattern
+                        json_match = re.search(r'\[.*\]', mapping_text, re.DOTALL)
+                        if json_match:
+                            try:
+                                mappings = json.loads(json_match.group())
+                            except json.JSONDecodeError:
+                                # Try to fix common JSON issues
+                                fixed_json = json_match.group().replace('\n', '').replace('\r', '')
+                                try:
+                                    mappings = json.loads(fixed_json)
+                                except json.JSONDecodeError:
+                                    raise ValueError(f"Could not parse JSON from response: {mapping_text[:200]}...")
+                        else:
+                            raise ValueError(f"No JSON found in response: {mapping_text[:200]}...")
+                    
+                    # Validate and filter mappings
+                    valid_mappings = []
+                    for mapping in mappings:
+                        if (isinstance(mapping, dict) and 
+                            mapping.get('relevance_score', 0) > 0.7 and
+                            'kalshi_ticker' in mapping):
+                            valid_mappings.append(mapping)
+                    
+                    if valid_mappings:
+                        self.logger.info(f"Mapped {entity} to {len(valid_mappings)} relevant markets")
+                        return valid_mappings
+                    else:
+                        self.logger.warning(f"No valid mappings found for {entity}")
+                        return self._get_fallback_mappings(entity, category)
+                    
+                except json.JSONDecodeError as e:
+                    self.logger.warning(f"JSON decode error on attempt {attempt + 1}: {e}")
+                    if attempt < max_retries - 1:
+                        continue
+                    else:
+                        return self._get_fallback_mappings(entity, category)
+                
+                except Exception as e:
+                    self.logger.warning(f"API error on attempt {attempt + 1}: {e}")
+                    if attempt < max_retries - 1:
+                        continue
+                    else:
+                        return self._get_fallback_mappings(entity, category)
             
         except Exception as e:
-            self.logger.error(f"Error mapping entity to markets: {e}")
-            return []
+            self.logger.error(f"Critical error mapping entity to markets: {e}")
+            return self._get_fallback_mappings(entity, category)
     
     def get_market_details(self, ticker: str) -> Optional[Dict[str, Any]]:
         """
@@ -214,3 +259,45 @@ class MarketMapper:
                 "issues": ["Validation failed"],
                 "suggestions": []
             }
+    
+    def _get_fallback_mappings(self, entity: str, category: str) -> List[Dict[str, Any]]:
+        """
+        Provide fallback mappings when API calls fail
+        """
+        self.logger.info(f"Using fallback mappings for {entity} in {category}")
+        
+        # Simple fallback mappings based on category
+        fallback_mappings = {
+            "NBA": [
+                {
+                    "entity": entity,
+                    "category": category,
+                    "kalshi_ticker": "NBA_2025_GSW_CHAMPIONSHIP",
+                    "market_name": f"{entity} to win 2025 NBA Championship",
+                    "relevance_score": 0.8,
+                    "market_type": "championship"
+                }
+            ],
+            "NFL": [
+                {
+                    "entity": entity,
+                    "category": category,
+                    "kalshi_ticker": "NFL_2025_DAL_PLAYOFFS",
+                    "market_name": f"{entity} to make 2025 NFL Playoffs",
+                    "relevance_score": 0.8,
+                    "market_type": "playoffs"
+                }
+            ],
+            "FINANCE": [
+                {
+                    "entity": entity,
+                    "category": category,
+                    "kalshi_ticker": "BTC_2024_100K",
+                    "market_name": f"{entity} to reach $100,000 by end of 2024",
+                    "relevance_score": 0.7,
+                    "market_type": "price_target"
+                }
+            ]
+        }
+        
+        return fallback_mappings.get(category, [])
